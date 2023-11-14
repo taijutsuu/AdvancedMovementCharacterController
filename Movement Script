@@ -1,0 +1,587 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+public class SimpleController : MonoBehaviour, IDamageable
+{
+
+    public CamType2 fpsCamera;
+    public Rigidbody rb;
+    public Transform orientation;
+    public bool CanMove { get; private set; } = true;
+    private bool ShouldJump => Input.GetKeyDown(jumpKey) && (isGrounded || wallRunning);
+    private bool ShouldCrouch => Input.GetKeyDown(crouchKey) && !sliding;
+    private bool ShouldSlide => Input.GetKey(slideKey) && isGrounded && !crouching && (horizontalInput != 0 || verticalInput != 0) && slideTimer <= 0 && currentSpeed > 10f;
+    private bool ShouldReturn => Input.GetKeyUp(crouchKey);
+    private bool ShouldWallRun => (leftWall || rightWall) && !isGrounded && !crouching;
+    private bool ShouldWallScale => forwardWall && Input.GetKey(KeyCode.W) && lookAngle < maxLookAngle;
+    private bool sprinting => CanSprint && Input.GetKey(sprintKey) && (horizontalInput != 0 || verticalInput != 0);
+
+    [Header("Functionality")]
+    [SerializeField] private bool CanSprint = true;
+    [SerializeField] private bool CanJump = true;
+    [SerializeField] private bool CanCrouch = true;
+    [SerializeField] private bool CanSlide = true;
+    [SerializeField] private bool CanWallRun = true;
+    [SerializeField] private bool CanWallScale = false;
+    [SerializeField] private bool CanSlopeSlide = true;
+
+    [Header("Controls")]
+    [SerializeField] private KeyCode sprintKey = KeyCode.LeftShift;
+    [SerializeField] private KeyCode jumpKey = KeyCode.Space;
+    [SerializeField] private KeyCode crouchKey = KeyCode.LeftControl;
+    [SerializeField] private KeyCode slideKey = KeyCode.C;
+    [SerializeField] private KeyCode wallRunUp = KeyCode.LeftShift;
+    [SerializeField] private KeyCode wallRunDown = KeyCode.LeftControl;
+
+    public Vector3 moveDirection;
+    private float horizontalInput;
+    private float verticalInput;
+
+    [Header("Speeds")]
+    [SerializeField] private float currentSpeed;
+    [SerializeField] private float switchedSpeed;
+    [SerializeField] private float lastSwitchedSpeed;
+    [SerializeField] private float movementSpeed = 12f;
+    [SerializeField] private float trueSlideSpeed = 23f;
+    [SerializeField] private float slideSpeed = 23f;
+    [SerializeField] private float crouchSpeed = 8f;
+    [SerializeField] private float sprintSpeed = 20f;
+    [SerializeField] private float wallRunSpeed = 23f;
+    [SerializeField] private float slopeSpeed = 15f;
+    [SerializeField] private float forceMultiplier = 2f;
+    [SerializeField] public float speedMultiplier;
+    [SerializeField] private float speedIncreaseMultiplier;
+    [SerializeField] private float slopeIncreaseMultiplier;
+
+    [Header("Jump Parameters")]
+    [SerializeField] private float jumpForce = 10f;
+    [SerializeField] private float airMultiplier;
+    [SerializeField] private bool readyToJump;
+    [SerializeField] private float timeFalling;
+    [SerializeField] private float gravity;
+    [SerializeField] private float maxGravity;
+    [SerializeField] private float gravityDuration;
+
+    [Header("Slide Parameters")]
+    [SerializeField] private float slideTimer;
+    [SerializeField] private float maxSlideTimer;
+    [SerializeField] private float slideSpeedDecrease;
+    [SerializeField] private float slideCooldown = 0.5f;
+
+    [Header("WallRunning Parameters")]
+    public LayerMask wallMask;
+    [SerializeField] private bool leftWall;
+    [SerializeField] private bool rightWall;
+    [SerializeField] private bool forwardWall;
+    private RaycastHit leftWallHit;
+    private RaycastHit rightWallHit;
+    private RaycastHit forwardWallHit;
+    [SerializeField] private float detectionLength;
+    [SerializeField] private float sphereRadius;
+    [SerializeField] private float maxLookAngle;
+    [SerializeField] private float lookAngle;
+    [SerializeField] private bool scalingUp;
+    [SerializeField] private bool scalingDown;
+    [SerializeField] private float wallScaleCooldown = 0.5f;
+    [SerializeField] private float wallCheckDistance;
+    [SerializeField] private float wallRunCooldown = 0.5f;
+    [SerializeField] private float wallRunForce;
+    [SerializeField] private float wallJumpSideForce;
+    [SerializeField] private bool wallRunningUp;
+    [SerializeField] private bool wallRunningDown;
+
+    [Header("GroundParameters")]
+    public Transform feet;
+    public Transform chest;
+    [SerializeField] private float groundDistance = 0.4f;
+    [SerializeField] private float groundDrag;
+    public LayerMask groundMask;
+
+    [Header("Slope Parameters")]
+    public float maxSlopeAngle;
+    private RaycastHit slopeHit;
+    private bool exitingSlope;
+
+    [Header("States")]
+    [SerializeField] private bool isGrounded;
+    [SerializeField] private bool crouching;
+    [SerializeField] private bool crouchingAnimation;
+    [SerializeField] private bool sliding;
+    [SerializeField] private bool wallRunning;
+    [SerializeField] private bool scaling;
+
+    [Header("Player Settings")]
+    [SerializeField] public float maxHealth = 100;
+    [SerializeField] public float currentHealth;
+    [SerializeField] Item[] items;
+    int itemIndex;
+    int previousIndex;
+
+    private void Start()
+    {
+        rb = GetComponent<Rigidbody>();
+        rb.freezeRotation = true;
+        ItemEquip(0);
+        currentHealth = maxHealth;
+    }
+
+    void Update()
+    {
+        for (int i = 0; i < items.Length; i++)
+        {
+            if (Input.GetKeyDown((i + 1).ToString()))
+            {
+                ItemEquip(i);
+                break;
+            }
+        }
+
+        if (CanMove)
+        {
+            MyInput();
+            Movement();
+            ApplyMovement();
+            CounterSpeed();
+            ItemManagement();
+        }
+        if (CanJump)
+        {
+            Jump();
+        }
+        if (CanCrouch)
+        {
+            Crouch();
+        }
+        if (CanSlide)
+        {
+            Slide();
+        }
+        if (CanWallRun)
+        {
+            WallRun();
+        }
+        if (CanWallScale)
+        {
+            WallScale();
+        }
+        if (!CanWallRun)
+        {
+            wallRunCooldown -= 0.5f * Time.deltaTime;
+            if (wallRunCooldown < 0f)
+            {
+                CanWallRun = true;
+                wallRunCooldown = 0.25f;
+            }
+        }
+        if (!CanSlide)
+        {
+            slideCooldown -= 0.5f * Time.deltaTime;
+            if (slideCooldown < 0f)
+            {
+                CanSlide = true;
+                slideCooldown = 0.25f;
+            }
+        }
+        if (wallRunning)
+        {
+            CanCrouch = false;
+            CanSlide = false;
+            CanSprint = false;
+        }
+        else if (scaling)
+        {
+            CanCrouch = false;
+            CanSlide = false;
+            rb.useGravity = false;
+            isGrounded = true;
+            if (scalingUp)
+            {
+                rb.velocity = new Vector3(rb.velocity.x, currentSpeed, rb.velocity.z);
+            }
+            if (scalingDown)
+            {
+                rb.velocity = new Vector3(rb.velocity.x, -currentSpeed, rb.velocity.z);
+            }
+        }
+        else
+        {
+            CanCrouch = true;
+            CanSprint = true;
+        }
+
+
+        isGrounded = Physics.CheckSphere(feet.position, groundDistance, groundMask);
+        rightWall = Physics.Raycast(transform.position, orientation.right, out rightWallHit, wallCheckDistance, wallMask);
+        leftWall = Physics.Raycast(transform.position, -orientation.right, out leftWallHit, wallCheckDistance, wallMask);
+        forwardWall = Physics.SphereCast(transform.position, sphereRadius, orientation.forward, out forwardWallHit, detectionLength, wallMask);
+        lookAngle = Vector3.Angle(orientation.forward, -forwardWallHit.normal);
+        if (!leftWall && !rightWall && wallRunning)
+        {
+            wallRunning = false;
+            CanSlide = true;
+            fpsCamera.Fov(80f);
+            fpsCamera.Tilt(0f);
+        }
+        switchedSpeed = wallRunning ? wallRunSpeed : sliding ? slideSpeed : crouching ? crouchSpeed : sprinting ? sprintSpeed : movementSpeed;
+        if (Mathf.Abs(switchedSpeed - lastSwitchedSpeed) > 4f && currentSpeed != 0)
+        {
+            StopAllCoroutines();
+            StartCoroutine(TransitionSpeed());
+        }
+        else
+        {
+            currentSpeed = switchedSpeed;
+        }
+        lastSwitchedSpeed = switchedSpeed;
+
+        if (isGrounded)
+        {
+            rb.drag = groundDrag;
+            if (!OnSlope())
+            {
+                exitingSlope = false;
+            }
+
+            Physics.gravity = new Vector3(0, -9.81f, 0);
+            gravity = -9.81f;
+            timeFalling = 0f;
+        }
+        else
+        {
+            rb.drag = 0;
+        }
+
+        
+
+    }
+
+    private void MyInput()
+    {
+        if (!wallRunning && !scaling)
+        {
+            horizontalInput = Input.GetAxisRaw("Horizontal");
+            verticalInput = Input.GetAxisRaw("Vertical");
+        }
+        else if (wallRunning)
+        {
+            if (leftWall)
+            {
+                wallRunningUp = Input.GetKey(KeyCode.A);
+                wallRunningDown = Input.GetKey(KeyCode.D);
+            }
+            else
+            {
+                wallRunningUp = Input.GetKey(KeyCode.D);
+                wallRunningDown = Input.GetKey(KeyCode.A);
+            }
+
+            verticalInput = Input.GetAxisRaw("Vertical");
+
+        }
+        else if (scaling)
+        {
+            scalingUp = Input.GetKey(KeyCode.W);
+            scalingDown = Input.GetKey(KeyCode.S);
+            horizontalInput = Input.GetAxisRaw("Horizontal");
+        }
+        
+
+    }
+
+    private void Movement()
+    {
+        moveDirection = orientation.forward * verticalInput + orientation.right * horizontalInput;
+
+    }
+
+    private void ApplyMovement()
+    {
+        if (OnSlope() && !exitingSlope)
+        {
+            rb.AddForce(GetSlopeMoveDirection(moveDirection) * currentSpeed * forceMultiplier * speedMultiplier, ForceMode.Force);
+
+        }
+        else if (isGrounded)
+        {
+            rb.AddForce(moveDirection.normalized * currentSpeed * forceMultiplier * speedMultiplier, ForceMode.Force);
+        }
+        else if (!isGrounded)
+        {
+            rb.AddForce(moveDirection.normalized * currentSpeed * forceMultiplier * airMultiplier * speedMultiplier, ForceMode.Force);
+        }
+        if (sliding)
+        {
+            //SlideSlow();
+            CanCrouch = false;
+            slideTimer -= 1f * Time.deltaTime;
+            if (slideTimer < 0)
+            {
+                sliding = false;
+                CanCrouch = true;
+                CanSlide = false;
+                crouching = true;
+                slideSpeed = trueSlideSpeed;
+            }
+        }
+        if (!wallRunning && !scaling)
+        {
+            rb.useGravity = !OnSlope();
+        }
+    }
+
+    private void CounterSpeed()
+    {
+        if (OnSlope() && !exitingSlope)
+        {
+            if (rb.velocity.magnitude > currentSpeed)
+                rb.velocity = rb.velocity.normalized * currentSpeed;
+        }
+        else
+        {
+            Vector3 flatVel = new Vector3(rb.velocity.x, 0f, rb.velocity.z);
+
+            if (flatVel.magnitude > currentSpeed)
+            {
+                Vector3 limitedVel = flatVel.normalized * currentSpeed;
+                rb.velocity = new Vector3(limitedVel.x, rb.velocity.y, limitedVel.z);
+            }
+        }
+
+        if (!isGrounded && !wallRunning)
+        { 
+            timeFalling += Time.deltaTime;
+
+            float fraction = timeFalling / gravityDuration;
+
+            gravity = Mathf.Lerp(-9.81f, maxGravity, fraction);
+
+            Physics.gravity = new Vector3(0, gravity, 0);
+        }
+
+        if (wallRunning)
+        {
+            Physics.gravity = new Vector3(0, -9.81f, 0);
+            gravity = -9.81f;
+            timeFalling = 0f;
+        }
+    }
+
+    private IEnumerator TransitionSpeed()
+    {
+        float time = 0;
+        float difference = Mathf.Abs(switchedSpeed - currentSpeed);
+        float startValue = currentSpeed;
+
+        while (time < difference)
+        {
+            currentSpeed = Mathf.Lerp(startValue, switchedSpeed, time / difference);
+
+            if (OnSlope())
+            {
+                float slopeAngle = Vector3.Angle(Vector3.up, slopeHit.normal);
+                float slopeAngleIncrease = 1 + (slopeAngle / 90f);
+
+                time += Time.deltaTime * speedIncreaseMultiplier * slopeIncreaseMultiplier * slopeAngleIncrease;
+            }
+            else
+                time += Time.deltaTime * speedIncreaseMultiplier;
+
+            yield return null;
+        }
+
+        currentSpeed = switchedSpeed;
+    }
+
+    private void Jump()
+    {
+        if (ShouldJump)
+        {
+            readyToJump = false;
+            exitingSlope = true;
+            if (wallRunning)
+            {
+                Vector3 wallNormal = rightWall ? rightWallHit.normal : leftWallHit.normal;
+                Vector3 applyForce = transform.up * jumpForce + wallNormal * wallJumpSideForce;
+                rb.velocity = new Vector3(rb.velocity.x, 0f, rb.velocity.z);
+                rb.AddForce(applyForce, ForceMode.Impulse);
+                wallRunning = false;
+                CanSlide = true;
+                fpsCamera.Fov(60f);
+                fpsCamera.Tilt(0f);
+                CanWallRun = false;
+            }
+            else if (scaling)
+            {
+                scaling = false;
+                rb.useGravity = true;
+                isGrounded = false;
+                transform.localRotation = Quaternion.Euler(-90f, 0f, 0f);
+                rb.velocity = new Vector3(rb.velocity.x, 0f, rb.velocity.z);
+                rb.AddForce(transform.up * jumpForce, ForceMode.Impulse);
+                CanWallScale = false;
+            }
+            else
+            {
+                rb.velocity = new Vector3(rb.velocity.x, 0f, rb.velocity.z);
+                rb.AddForce(transform.up * jumpForce, ForceMode.Impulse);
+            }
+            
+            Invoke(nameof(ResetJump), 0f);
+
+        }
+    }
+    private void ResetJump()
+    {
+        readyToJump = true;
+
+        exitingSlope = false;
+    }
+
+    private void Crouch()
+    {
+        if (ShouldCrouch)
+        {
+            crouching = true;
+            CanSprint = false;
+            base.transform.localScale = new Vector3(1f, 0.5f, 1f);
+            base.transform.position = new Vector3(base.transform.position.x, base.transform.position.y - 0.5f, base.transform.position.z);
+        }
+        if (ShouldReturn && !Physics.Raycast(fpsCamera.transform.position, Vector3.up, 1f) || crouching && Input.GetKey(crouchKey) == false && !Physics.Raycast(fpsCamera.transform.position, Vector3.up, 1f))
+        {
+            crouching = false;
+            CanSprint = true;
+            sliding = false;
+            CanCrouch = true;
+            slideSpeed = trueSlideSpeed;
+            base.transform.localScale = new Vector3(1f, 1.5f, 1f);
+            base.transform.position = new Vector3(base.transform.position.x, base.transform.position.y + 0.5f, base.transform.position.z);
+        }
+
+    }
+
+    private void Slide()
+    {
+        if (ShouldSlide)
+        {
+            sliding = true;
+            slideTimer = maxSlideTimer;
+            base.transform.localScale = new Vector3(1f, 0.5f, 1f);
+            base.transform.position = new Vector3(base.transform.position.x, base.transform.position.y - 0.5f, base.transform.position.z);
+        }
+    }
+
+    private void WallRun()
+    {
+        if (ShouldWallRun)
+        {
+            wallRunning = true;
+            fpsCamera.Fov(80f);
+            if (leftWall)
+            {
+                fpsCamera.Tilt(-5f);
+            }
+            if (rightWall)
+            {
+                fpsCamera.Tilt(5f);
+            }
+            rb.useGravity = false;
+            rb.velocity = new Vector3(rb.velocity.x, 0f, rb.velocity.z);
+
+            Vector3 wallNormal = rightWall ? rightWallHit.normal : leftWallHit.normal;
+            Vector3 wallForward = Vector3.Cross(wallNormal, transform.up);
+
+            if ((orientation.forward - wallForward).magnitude > (orientation.forward - -wallForward).magnitude)
+            {
+                wallForward = -wallForward;
+            }
+
+            rb.AddForce(wallForward * wallRunForce, ForceMode.Force);
+
+            if (wallRunningUp)
+            {
+                rb.velocity = new Vector3(rb.velocity.x, wallRunSpeed / 2, rb.velocity.z);
+            }  
+            if (wallRunningDown)
+            {
+                rb.velocity = new Vector3(rb.velocity.x, -wallRunSpeed / 2, rb.velocity.z);
+            }
+            /*if (!(leftWall && horizontalInput > 0) && !(rightWall && horizontalInput < 0))
+            {
+                rb.AddForce(-wallNormal * 100, ForceMode.Force);
+            }*/
+        }
+        
+    }
+
+    private void WallScale()
+    {
+        if (ShouldWallScale)
+        {
+            scaling = true;
+            rb.useGravity = false;
+            isGrounded = true;
+            transform.localRotation = Quaternion.Euler(-90f, 0f, 0f);
+        }
+    }
+
+    public bool OnSlope()
+    {
+        if (Physics.Raycast(transform.position, Vector3.down, out slopeHit, 2f))
+        {
+            float angle = Vector3.Angle(Vector3.up, slopeHit.normal);
+            return angle < maxSlopeAngle && angle != 0;
+        }
+
+        return false;
+    }
+
+    public Vector3 GetSlopeMoveDirection(Vector3 direction)
+    {
+        return Vector3.ProjectOnPlane(direction, slopeHit.normal).normalized;
+    }
+
+    private void ItemEquip(int _index)
+    {
+        if (_index == previousIndex)
+        {
+            return;
+        }
+
+        itemIndex = _index;
+        items[itemIndex].itemGameObject.SetActive(true);
+        if (previousIndex != -1)
+        {
+            items[previousIndex].itemGameObject.SetActive(false);
+        }
+        previousIndex = itemIndex;
+    }
+
+    private void PlayerManagement()
+    {
+        if (currentHealth <= 0)
+        {
+            Death();
+        }
+    }
+
+    private void ItemManagement()
+    {
+        if (Input.GetMouseButtonDown(0))
+        {
+            items[itemIndex].Use();
+        }
+    }
+
+    public void TakeDamage(float damage)
+    {
+        Debug.Log("took damage: " + damage);
+        currentHealth -= damage;
+    }
+
+    private void Death()
+    {
+        Debug.Log("Death");
+    }
+
+}
